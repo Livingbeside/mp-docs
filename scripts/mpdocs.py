@@ -12,6 +12,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from common import MIRROR, commit_mirror, git, log, now_iso  # noqa: E402
 
+MIN_FREE_MB = 1500   # ниже этого браузер не поднимаем: рядом работают бустеры
+
+
+def available_mb() -> int:
+    """MemAvailable — сколько реально можно занять, не выдавив чужие страницы."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1 << 30
+
+
 SOURCES = {
     "ozon-api": ("src_ozon_api", "Спека Ozon Seller API"),
     "ozon-kb": ("src_ozon_kb", "База знаний Ozon (seller-edu)"),
@@ -27,6 +41,19 @@ def cmd_update(args) -> int:
     if unknown:
         print(f"неизвестный источник: {', '.join(unknown)}", file=sys.stderr)
         return 2
+
+    free = available_mb()
+    if free < MIN_FREE_MB and not args.force:
+        browser_names = [n for n in names if n in BROWSER_SOURCES]
+        if browser_names:
+            log(f"свободно {free} МБ (< {MIN_FREE_MB}) — Camoufox не поднимаю, "
+                f"пропускаю {', '.join(browser_names)}; рядом работают бустеры")
+            names = [n for n in names if n not in BROWSER_SOURCES]
+            if not names:
+                print(json.dumps({"ok": True, "skipped": browser_names,
+                                  "reason": f"мало памяти: {free} МБ", "changed": 0},
+                                 ensure_ascii=False, indent=2))
+                return 0
 
     results, failed = [], []
     for name in names:
@@ -109,6 +136,8 @@ def main() -> int:
     up.add_argument("--max-docs", type=int, default=4000)
     up.add_argument("--delay", type=float, default=0.35)
     up.add_argument("--no-commit", dest="commit", action="store_false")
+    up.add_argument("--force", action="store_true",
+                    help="качать браузерные источники даже при нехватке памяти")
     up.set_defaults(func=cmd_update, commit=True)
 
     st = sub.add_parser("status", help="что есть в зеркале и когда обновлялось")
