@@ -30,6 +30,7 @@ def available_mb() -> int:
 SOURCES = {
     "ozon-api": ("src_ozon_api", "Спека Ozon Seller API"),
     "ozon-kb": ("src_ozon_kb", "База знаний Ozon (seller-edu)"),
+    "ozon-chat": ("src_ozon_chat", "Обновления Seller API из служебных чатов кабинета"),
     "wb": ("src_wb", "Wildberries: спеки всех разделов"),
     "ym": ("src_ym", "Яндекс Маркет: справка + спека"),
 }
