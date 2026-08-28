@@ -72,6 +72,56 @@ def spec_from_html(html: str) -> dict | None:
     return None
 
 
+DATE_LINE = re.compile(r"^(\d{2}\.\d{2}\.\d{4})$")
+
+
+def _structure_notes(md: str) -> str:
+    """Даты в журнале WB — обычные строки. Делаем из них заголовки,
+    иначе записи не отделить друг от друга ни глазом, ни командой changelog.
+    Заодно схлопываем дубли ярлыков («Новое / Новое»), которые даёт вёрстка.
+    """
+    out: list[str] = []
+    prev = ""
+    for line in md.split("\n"):
+        stripped = line.strip()
+        if stripped and stripped == prev:
+            continue
+        m = DATE_LINE.match(stripped)
+        out.append(f"## {m.group(1)}" if m else line)
+        if stripped:
+            prev = stripped
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+def _notes_markdown(html: str) -> str:
+    """Журнал WB — ~400 мелких записей, ни одна не «главный контейнер».
+
+    Readability-скоринг proxy-web на такой странице выбирает пустой блок и отдаёт
+    25 символов, поэтому берём тело целиком поблочно, убрав служебную обвязку.
+    """
+    from common import proxyweb_scripts
+    proxyweb_scripts()
+    import extract
+
+    try:
+        from lxml import html as LH
+        doc = LH.fromstring(html)
+        for bad in doc.xpath("//script|//style|//nav|//footer|//noscript|//head"):
+            parent = bad.getparent()
+            if parent is not None:
+                parent.remove(bad)
+        body = doc.find("body")
+        if body is not None:
+            blocks = extract._blocks(body)
+            md = "\n\n".join(b for b in blocks if b.strip())
+            if len(md) > 2000:
+                return _structure_notes(md)
+    except Exception as exc:
+        log(f"WB: поблочный разбор журнала не удался ({type(exc).__name__}), беру скоринг")
+    md, _title = extract.html_to_markdown(html, RELEASE_NOTES)
+    return md
+
+
 def discover_sections(html: str) -> list[str]:
     found = re.findall(r'href="/docs/openapi/([a-z0-9-]+)"', html)
     return sorted(dict.fromkeys(found))
@@ -100,7 +150,9 @@ def run(channel: str = "optic", **_kw) -> dict:
 
     urls = [SECTION_URL.format(s) for s in sections] + [RELEASE_NOTES]
     # Один браузер на все страницы: челлендж Qrator проходится один раз.
-    results = browser.browse(urls, proxy, wait_ms=40_000)
+    # scroll — ради журнала изменений: он подгружает записи по мере прокрутки,
+    # без неё в DOM попадают только последние ~20.
+    results = browser.browse(urls, proxy, wait_ms=40_000, scroll=8)
     notes_result = results[-1] if len(results) > len(sections) else None
     results = results[:len(sections)]
 
@@ -126,16 +178,18 @@ def run(channel: str = "optic", **_kw) -> dict:
 
     # Журнал изменений у WB, в отличие от Ozon, лежит не в спеке, а отдельной страницей.
     if notes_result is not None and notes_result.html:
-        from common import proxyweb_scripts
-        proxyweb_scripts()
-        import extract
-        md, _title = extract.html_to_markdown(notes_result.html, RELEASE_NOTES)
+        md = _notes_markdown(notes_result.html)
         if len(md) > 2000:
             if write_doc(f"{BASE}/changelog.md",
                          {"title": "Журнал изменений WB API", "api": "wildberries",
                           "kind": "changelog", "source": RELEASE_NOTES,
+                          "window": "последние записи, страница отдаёт не всю историю",
                           "fetched_at": now_iso()},
-                         f"# Журнал изменений WB API\n\n{md}"):
+                         "# Журнал изменений WB API\n\n"
+                         "> Страница WB отдаёт в DOM только последние записи "
+                         "(прокрутка остальные не подгружает), поэтому здесь "
+                         "скользящее окно, а не вся история. Полная история "
+                         "накапливается в git: `mpdocs changes`.\n\n" + md):
                 changed += 1
             log(f"WB: журнал изменений — {len(md) // 1024} КБ")
         else:
