@@ -62,6 +62,19 @@ TOOLS = [
         },
     },
     {
+        "name": "announced_changes",
+        "description": ("Официальный журнал обновлений маркетплейса — что он объявил сам, "
+                        "с датами и ссылками на методы. Дополняет recent_changes, который "
+                        "показывает фактические правки файлов, включая необъявленные."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "marketplace": {"type": "string", "enum": ["ozon", "wb", "ym", "any"]},
+                "count": {"type": "integer", "description": "сколько последних записей, по умолчанию 5"},
+            },
+        },
+    },
+    {
         "name": "recent_changes",
         "description": ("Что менялось в документации за период: маркетплейсы правят "
                         "лимиты и отключают методы молча, история зеркала это ловит."),
@@ -142,8 +155,26 @@ def tool_changes(a: dict) -> str:
     return _clip(out.strip() or f"за {since} документация не менялась")
 
 
+def tool_announced(a: dict) -> str:
+    files = sorted(MIRROR.rglob("changelog.md"))
+    sub = SUBDIRS.get(a.get("marketplace", "any"), "")
+    if sub:
+        files = [f for f in files if str(f.relative_to(MIRROR)).startswith(sub)]
+    if not files:
+        return "официальных журналов обновлений в зеркале нет"
+    count = int(a.get("count") or 5)
+    out = []
+    for f in files:
+        body = f.read_text(encoding="utf-8").split("---", 2)[-1]
+        blocks = re.split(r"^## ", body, flags=re.M)[1:]
+        out.append(f"═══ {f.relative_to(MIRROR)} ═══")
+        out += ["## " + b.rstrip() for b in blocks[:count]]
+    return _clip("\n".join(out))
+
+
 HANDLERS = {"search_docs": tool_search, "read_doc": tool_read,
-            "find_method": tool_find_method, "recent_changes": tool_changes}
+            "find_method": tool_find_method, "recent_changes": tool_changes,
+            "announced_changes": tool_announced}
 
 
 def handle(req: dict) -> dict | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -106,6 +107,25 @@ def cmd_status(_args) -> int:
     return 0
 
 
+def cmd_changelog(args) -> int:
+    """Что маркетплейс ОБЪЯВИЛ. Дополняет `changes`, который показывает,
+    что реально изменилось в файлах — включая то, о чём не объявляли."""
+    files = sorted(MIRROR.rglob("changelog.md"))
+    if args.source:
+        files = [f for f in files if args.source in str(f.relative_to(MIRROR))]
+    if not files:
+        print("ченджлогов в зеркале нет")
+        return 0
+    for f in files:
+        rel = f.relative_to(MIRROR)
+        body = f.read_text(encoding="utf-8").split("---", 2)[-1]
+        blocks = re.split(r"^## ", body, flags=re.M)[1:]
+        print(f"\n═══ {rel} ═══")
+        for block in blocks[:args.count]:
+            print("## " + block.rstrip()[:args.width])
+    return 0
+
+
 def cmd_changes(args) -> int:
     out = git("log", f"--since={args.since}", "--stat", "--format=%h %ad %s",
               "--date=short", check=False)
@@ -143,9 +163,17 @@ def main() -> int:
     st = sub.add_parser("status", help="что есть в зеркале и когда обновлялось")
     st.set_defaults(func=cmd_status)
 
-    ch = sub.add_parser("changes", help="что менялось в документации")
+    ch = sub.add_parser("changes",
+                        help="что реально изменилось в файлах, по git-истории")
     ch.add_argument("--since", default="2.weeks")
     ch.set_defaults(func=cmd_changes)
+
+    cl = sub.add_parser("changelog",
+                        help="что маркетплейс объявил сам (в отличие от changes)")
+    cl.add_argument("-n", "--count", type=int, default=5, help="сколько последних записей")
+    cl.add_argument("-s", "--source", default="", help="ozon, wb, ym")
+    cl.add_argument("-w", "--width", type=int, default=2000)
+    cl.set_defaults(func=cmd_changelog)
 
     se = sub.add_parser("search", help="поиск по зеркалу")
     se.add_argument("query")

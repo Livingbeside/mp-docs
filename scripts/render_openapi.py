@@ -71,11 +71,21 @@ def _clean_block(text) -> str:
     """
     if not text:
         return ""
-    text = re.sub(r"<br\s*/?>", "\n", str(text), flags=re.I)
+    # <br> внутри ячейки таблицы переводом строки ломает саму таблицу,
+    # поэтому решаем по месту: в строке таблицы оставляем <br>, иначе переносим.
+    text = re.sub(r"<br\s*/?>", "\x00BR\x00", str(text), flags=re.I)
     text = re.sub(r"</(p|div|li|tr)>", "\n", text, flags=re.I)
+    # <a href="X">Y</a> → [Y](X): иначе от ссылки остаётся только подпись.
+    text = re.sub(r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r"[\2](\1)",
+                  text, flags=re.I | re.S)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"\{\{[^}]*\}\}", "", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
+    out = []
+    for line in text.split("\n"):
+        out.append(line.replace("\x00BR\x00", "<br>" if line.lstrip().startswith("|")
+                                else "\n"))
+    text = "\n".join(out).replace("\x00BR\x00", "\n")
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -198,6 +208,46 @@ def render_operation(spec: dict, path: str, method: str, op: dict,
     return rel, meta, "\n".join(lines)
 
 
+# Только точные названия журналов: «история» ловила «Историю остатков» у WB.
+CHANGELOG_NAMES = ("news", "changelog", "обновления", "история изменений",
+                   "журнал изменений", "release notes", "что нового")
+
+
+def _is_changelog(tag: dict) -> bool:
+    names = {(tag.get("name") or "").strip().lower(),
+             (tag.get("x-displayName") or "").strip().lower()}
+    return bool(names & set(CHANGELOG_NAMES))
+
+
+def render_guides(spec: dict, *, api: str, base: str, source_url: str) -> tuple[int, int]:
+    """Теги OpenAPI с описанием — это разделы справки: авторизация, лимиты,
+    частые ошибки, ченджлог. У Ozon их 606 КБ, больше, чем описаний всех методов.
+    """
+    groups: dict[str, str] = {}
+    for g in spec.get("x-tagGroups") or []:
+        for t in g.get("tags") or []:
+            groups[t] = g.get("name") or ""
+
+    total = changed = 0
+    for tag in spec.get("tags") or []:
+        desc = (tag.get("description") or "").strip()
+        if not desc:
+            continue
+        name = tag.get("name") or ""
+        title = tag.get("x-displayName") or name
+        body = f"# {title}\n\n{_clean_block(desc)}"
+        rel = (f"{base}/changelog.md" if _is_changelog(tag)
+               else f"{base}/guides/{slug(title)}.md")
+        meta = {"title": title, "api": api, "tag": name,
+                "group": groups.get(name, ""),
+                "kind": "changelog" if _is_changelog(tag) else "guide",
+                "source": source_url}
+        total += 1
+        if write_doc(rel, meta, body):
+            changed += 1
+    return total, changed
+
+
 def render_spec(spec: dict, *, api: str, base: str, source_url: str) -> tuple[int, int]:
     """Пишет все операции спеки. Возвращает (всего, изменилось)."""
     info = spec.get("info") or {}
@@ -222,10 +272,15 @@ def render_spec(spec: dict, *, api: str, base: str, source_url: str) -> tuple[in
                 _clean(op.get("summary")) or meta["operation_id"],
                 rel.split("/", len(base.split("/")))[-1]))
 
+    guides, guides_changed = render_guides(spec, api=api, base=base,
+                                           source_url=source_url)
+    changed += guides_changed
+
     head = [f"# {info.get('title') or api}", ""]
     if info.get("description"):
         head += [_clean_block(info["description"])[:4000], ""]
-    head += [f"Версия спеки: `{version}` · методов: **{total}**", "",
+    head += [f"Версия спеки: `{version}` · методов: **{total}** · "
+             f"разделов справки: **{guides}**", "",
              f"Источник: {source_url}", "",
              "| Метод | Путь | Раздел | Описание |", "|---|---|---|---|"]
     if write_doc(f"{base}/index.md",
