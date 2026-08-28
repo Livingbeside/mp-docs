@@ -156,7 +156,8 @@ def tool_changes(a: dict) -> str:
 
 
 def tool_announced(a: dict) -> str:
-    files = sorted(MIRROR.rglob("changelog.md"))
+    files = sorted(set(MIRROR.rglob("changelog.md")) |
+                   {f for f in MIRROR.rglob("changelog/*.md")})
     sub = SUBDIRS.get(a.get("marketplace", "any"), "")
     if sub:
         files = [f for f in files if str(f.relative_to(MIRROR)).startswith(sub)]
@@ -166,9 +167,10 @@ def tool_announced(a: dict) -> str:
     out = []
     for f in files:
         body = f.read_text(encoding="utf-8").split("---", 2)[-1]
-        blocks = re.split(r"^## ", body, flags=re.M)[1:]
+        blocks = re.split(r"^(#{2,3} )", body, flags=re.M)
+        pairs = list(zip(blocks[1::2], blocks[2::2]))
         out.append(f"═══ {f.relative_to(MIRROR)} ═══")
-        out += ["## " + b.rstrip() for b in blocks[:count]]
+        out += [lvl + b.rstrip() for lvl, b in pairs[:count]]
     return _clip("\n".join(out))
 
 

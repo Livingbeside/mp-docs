@@ -110,7 +110,9 @@ def cmd_status(_args) -> int:
 def cmd_changelog(args) -> int:
     """Что маркетплейс ОБЪЯВИЛ. Дополняет `changes`, который показывает,
     что реально изменилось в файлах — включая то, о чём не объявляли."""
-    files = sorted(MIRROR.rglob("changelog.md"))
+    # Названия разные: у Ozon/WB это changelog.md, у ЯМ — каталог changelog/.
+    files = sorted(set(MIRROR.rglob("changelog.md")) |
+                   {f for f in MIRROR.rglob("changelog/*.md")})
     if args.source:
         files = [f for f in files if args.source in str(f.relative_to(MIRROR))]
     if not files:
@@ -119,10 +121,14 @@ def cmd_changelog(args) -> int:
     for f in files:
         rel = f.relative_to(MIRROR)
         body = f.read_text(encoding="utf-8").split("---", 2)[-1]
-        blocks = re.split(r"^## ", body, flags=re.M)[1:]
+        # Даты у Ozon под ##, у ЯМ под ### — режем по обоим уровням.
+        blocks = re.split(r"^(#{2,3} )", body, flags=re.M)
+        pairs = list(zip(blocks[1::2], blocks[2::2]))
         print(f"\n═══ {rel} ═══")
-        for block in blocks[:args.count]:
-            print("## " + block.rstrip()[:args.width])
+        if not pairs:
+            print("(без датированных разделов)")
+        for level, block in pairs[:args.count]:
+            print(level + block.rstrip()[:args.width])
     return 0
 
 

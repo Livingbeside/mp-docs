@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import re
 
-from common import MIRROR, json_stable, log, now_iso, write_raw
+from common import MIRROR, json_stable, log, now_iso, write_doc, write_raw
 from render_openapi import render_spec
 
 HOME = "https://dev.wildberries.ru/"
 SECTION_URL = "https://dev.wildberries.ru/docs/openapi/{}"
+RELEASE_NOTES = "https://dev.wildberries.ru/release-notes"
 BASE = "wb/api"
 
 # Запасной список: если главная не отдалась, разделы всё равно известны.
@@ -97,9 +98,11 @@ def run(channel: str = "optic", **_kw) -> dict:
             log(f"WB: появились новые разделы — {', '.join(sorted(new))}")
     log(f"WB: разделов {len(sections)}")
 
-    urls = [SECTION_URL.format(s) for s in sections]
-    # Один браузер на все разделы: челлендж Qrator проходится один раз.
+    urls = [SECTION_URL.format(s) for s in sections] + [RELEASE_NOTES]
+    # Один браузер на все страницы: челлендж Qrator проходится один раз.
     results = browser.browse(urls, proxy, wait_ms=40_000)
+    notes_result = results[-1] if len(results) > len(sections) else None
+    results = results[:len(sections)]
 
     total = changed = 0
     ok_sections = 0
@@ -120,6 +123,23 @@ def run(channel: str = "optic", **_kw) -> dict:
         total += ops
         changed += ops_changed
         log(f"WB: {section} — методов {ops}, обновлено {ops_changed}")
+
+    # Журнал изменений у WB, в отличие от Ozon, лежит не в спеке, а отдельной страницей.
+    if notes_result is not None and notes_result.html:
+        from common import proxyweb_scripts
+        proxyweb_scripts()
+        import extract
+        md, _title = extract.html_to_markdown(notes_result.html, RELEASE_NOTES)
+        if len(md) > 2000:
+            if write_doc(f"{BASE}/changelog.md",
+                         {"title": "Журнал изменений WB API", "api": "wildberries",
+                          "kind": "changelog", "source": RELEASE_NOTES,
+                          "fetched_at": now_iso()},
+                         f"# Журнал изменений WB API\n\n{md}"):
+                changed += 1
+            log(f"WB: журнал изменений — {len(md) // 1024} КБ")
+        else:
+            log(f"WB: журнал изменений пуст ({len(md)} символов), пропускаю")
 
     log(f"WB: разделов взято {ok_sections}/{len(sections)}, методов {total}, "
         f"обновлено файлов {changed}")
