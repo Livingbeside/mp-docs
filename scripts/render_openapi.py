@@ -54,11 +54,29 @@ def _type_of(sch: dict, spec) -> str:
 
 
 def _clean(text) -> str:
+    """Однострочно: для ячеек таблиц и описаний полей."""
     if not text:
         return ""
     text = re.sub(r"<[^>]+>", " ", str(text))
+    text = re.sub(r"\{\{[^}]*\}\}", " ", text)      # шаблонные вставки WB
     text = re.sub(r"[ \t]*\n[ \t]*", " ", text)
-    return re.sub(r"\s{2,}", " ", text).strip()
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
+def _clean_block(text) -> str:
+    """Блочно: строки сохраняются.
+
+    У WB лимиты запросов лежат markdown-таблицей прямо в description метода —
+    схлопывание переводов строк превращало их в нечитаемую кашу.
+    """
+    if not text:
+        return ""
+    text = re.sub(r"<br\s*/?>", "\n", str(text), flags=re.I)
+    text = re.sub(r"</(p|div|li|tr)>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"\{\{[^}]*\}\}", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _fields(sch, spec, depth: int = 0, seen: tuple = ()) -> list[str]:
@@ -149,12 +167,12 @@ def render_operation(spec: dict, path: str, method: str, op: dict,
     tags = op.get("tags") or ["other"]
     tag = tags[0]
     op_id = op.get("operationId") or f"{method}-{slug(path)}"
-    title = op.get("summary") or op_id
+    title = _clean(op.get("summary")) or op_id
 
     lines = [f"# {title}", "", f"`{method.upper()} {path}`", ""]
     desc = op.get("description") or ""
     if desc:
-        lines += [_clean(desc), ""]
+        lines += [_clean_block(desc), ""]
     if op.get("deprecated"):
         lines.insert(4, "> ⚠️ Метод помечен как **deprecated**.")
         lines.insert(5, "")
@@ -206,7 +224,7 @@ def render_spec(spec: dict, *, api: str, base: str, source_url: str) -> tuple[in
 
     head = [f"# {info.get('title') or api}", ""]
     if info.get("description"):
-        head += [_clean(info["description"])[:2000], ""]
+        head += [_clean_block(info["description"])[:4000], ""]
     head += [f"Версия спеки: `{version}` · методов: **{total}**", "",
              f"Источник: {source_url}", "",
              "| Метод | Путь | Раздел | Описание |", "|---|---|---|---|"]
