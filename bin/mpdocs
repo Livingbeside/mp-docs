@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Лаунчер mp-docs: сам находит python с нужными пакетами.
+# Браузерным источникам (Ozon, WB) нужен camoufox — он стоит в venv ozonpos,
+# а не в системном python. Без него работают только ЯМ, status/search/changes.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT="$HERE/scripts/mpdocs.py"
+
+candidates=(
+  "${MP_DOCS_PYTHON:-}"
+  "$HERE/.venv/bin/python"
+  "/root/.openclaw/workspace/ozonpos/.venv/bin/python"
+  "python3"
+)
+
+for py in "${candidates[@]}"; do
+  [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c 'import camoufox, requests, yaml' 2>/dev/null; then exec "$py" "$SCRIPT" "$@"; fi
+done
+
+for py in "${candidates[@]}"; do
+  [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
+  if "$py" -c 'import requests, yaml' 2>/dev/null; then
+    echo "⚠️  python с camoufox не найден — Ozon и WB качаться не будут." >&2
+    exec "$py" "$SCRIPT" "$@"
+  fi
+done
+
+echo "⛔ не найден python с requests и pyyaml" >&2
+exit 2
