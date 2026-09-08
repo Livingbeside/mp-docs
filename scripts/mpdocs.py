@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import MIRROR, commit_mirror, git, log, now_iso  # noqa: E402
+from common import MIRROR, commit_mirror, git, log, now_iso, push_mirror  # noqa: E402
 
 MIN_FREE_MB = 1500   # ниже этого браузер не поднимаем: рядом работают бустеры
 
@@ -74,14 +74,21 @@ def cmd_update(args) -> int:
 
     changed = sum(r.get("changed", 0) for r in results)
     summary = ", ".join(f"{r['source']}:{r.get('changed', 0)}" for r in results)
+    pushed = None
     if args.commit and changed:
         stat = commit_mirror(f"update {now_iso()} — {summary}")
         log(f"коммит: {stat}")
+        if args.push:
+            err = push_mirror()
+            pushed = err is None
+            log("зеркало отправлено в общий репозиторий" if pushed
+                else f"!! push не прошёл ({err}) — уедет следующим прогоном")
     elif args.commit:
         log("изменений нет, коммитить нечего")
 
     print(json.dumps({"ok": not failed, "results": results, "failed": failed,
-                      "changed": changed}, ensure_ascii=False, indent=2))
+                      "changed": changed, "pushed": pushed},
+                     ensure_ascii=False, indent=2))
     return 1 if failed else 0
 
 
@@ -163,9 +170,11 @@ def main() -> int:
     up.add_argument("--max-docs", type=int, default=4000)
     up.add_argument("--delay", type=float, default=0.35)
     up.add_argument("--no-commit", dest="commit", action="store_false")
+    up.add_argument("--no-push", dest="push", action="store_false",
+                    help="не отправлять зеркало в общий репозиторий (пуш и так требует MP_DOCS_PUSH=1)")
     up.add_argument("--force", action="store_true",
                     help="качать браузерные источники даже при нехватке памяти")
-    up.set_defaults(func=cmd_update, commit=True)
+    up.set_defaults(func=cmd_update, commit=True, push=True)
 
     st = sub.add_parser("status", help="что есть в зеркале и когда обновлялось")
     st.set_defaults(func=cmd_status)

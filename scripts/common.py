@@ -178,5 +178,39 @@ def commit_mirror(message: str) -> str | None:
     return stat
 
 
+def push_mirror() -> str | None:
+    """Отправить зеркало в общий репозиторий. Возвращает текст ошибки или None.
+
+    Пуш выключен по умолчанию и включается `MP_DOCS_PUSH=1` — иначе чужая копия,
+    поставленная через install.sh, каждый раз билась бы в наш origin без прав
+    на запись и сыпала ошибками в лог. Пушит только машина-источник.
+
+    Сбой не должен ронять обновление: зеркало уже закоммичено локально, следующий
+    прогон отправит и его. BatchMode и GIT_TERMINAL_PROMPT нужны, чтобы под systemd
+    не зависнуть на запросе пароля.
+    """
+    if os.environ.get("MP_DOCS_PUSH") != "1":
+        return None
+    if "origin" not in git("remote", check=False).split():
+        return "origin не настроен"
+
+    env = dict(os.environ)
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
+    ssh = "ssh -o BatchMode=yes"
+    key = env.get("MP_DOCS_SSH_KEY")
+    if key:
+        ssh += f" -i {key} -o IdentitiesOnly=yes"
+    env.setdefault("GIT_SSH_COMMAND", ssh)
+
+    try:
+        r = subprocess.run(["git", "push", "origin", "HEAD"], cwd=str(MIRROR),
+                           capture_output=True, text=True, env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        return "push не уложился в 10 минут"
+    if r.returncode == 0:
+        return None
+    return (r.stderr.strip() or f"код возврата {r.returncode}").splitlines()[-1]
+
+
 def log(msg: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
