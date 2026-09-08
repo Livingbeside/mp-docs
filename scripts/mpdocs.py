@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import MIRROR, commit_mirror, git, log, now_iso, push_mirror  # noqa: E402
 
 MIN_FREE_MB = 1500   # ниже этого браузер не поднимаем: рядом работают бустеры
+STALE_DAYS = 3       # источник обновляется каждую ночь; больше трёх дней = отстали
 
 
 def available_mb() -> int:
@@ -112,6 +114,14 @@ def cmd_status(_args) -> int:
     head = git("log", "-1", "--format=%h %ad %s", "--date=short", check=False).strip()
     if head:
         print(f"последний коммит: {head}")
+
+    # Копия обновляется через git pull, и протухает молча — предупреждаем сами.
+    age = git("log", "-1", "--format=%ct", check=False).strip()
+    if age:
+        days = (time.time() - int(age)) / 86400
+        if days >= STALE_DAYS:
+            print(f"\n⚠️  зеркалу {int(days)} дн. — обнови: "
+                  f"git -C {MIRROR} pull")
     return 0
 
 

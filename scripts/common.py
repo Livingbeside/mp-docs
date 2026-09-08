@@ -209,7 +209,11 @@ def push_mirror() -> str | None:
         return "push не уложился в 10 минут"
     if r.returncode == 0:
         return None
-    return (r.stderr.strip() or f"код возврата {r.returncode}").splitlines()[-1]
+    lines = [ln.strip() for ln in r.stderr.splitlines() if ln.strip()]
+    for ln in lines:                     # git печатает суть первой строкой,
+        if ln.startswith(("fatal:", "error:", "remote:")):   # а дальше советы
+            return ln
+    return lines[0] if lines else f"код возврата {r.returncode}"
 
 
 def log(msg: str) -> None:
