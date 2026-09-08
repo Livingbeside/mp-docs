@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Лаунчер mp-docs: сам находит python с нужными пакетами.
-# Браузерным источникам (Ozon, WB) нужен camoufox — он стоит в venv ozonpos,
-# а не в системном python. Без него работают только ЯМ, status/search/changes.
+# Лаунчер mp-docs: сам находит подходящий python.
+# Для чтения (search/status/changelog/changes) хватает голого python3 —
+# нужны только rg и git. Для обновления нужны requests и pyyaml, а браузерным
+# источникам (Ozon, WB) ещё и camoufox: он стоит в venv ozonpos, не в системном.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$HERE/scripts/mpdocs.py"
@@ -26,5 +27,16 @@ for py in "${candidates[@]}"; do
   fi
 done
 
-echo "⛔ не найден python с requests и pyyaml" >&2
+# Ни requests, ни yaml: читать зеркало это не мешает, качать — да.
+for py in "${candidates[@]}"; do
+  [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
+  if [ "${1:-}" = "update" ]; then
+    echo "⛔ для update нужны requests и pyyaml — здесь их нет." >&2
+    echo "   Обновляйтесь из общего зеркала: git -C \"$HERE/mirror\" pull" >&2
+    exit 2
+  fi
+  exec "$py" "$SCRIPT" "$@"
+done
+
+echo "⛔ не найден python3" >&2
 exit 2
