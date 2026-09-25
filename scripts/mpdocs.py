@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from common import MIRROR, commit_mirror, git, log, now_iso, push_mirror  # noqa: E402
+from common import (MIRROR, commit_mirror, git, log, now_iso, push_enabled,  # noqa: E402
+                    push_mirror)
 
 MIN_FREE_MB = 1500   # ниже этого браузер не поднимаем: рядом работают бустеры
 STALE_DAYS = 3       # источник обновляется каждую ночь; больше трёх дней = отстали
@@ -83,7 +84,9 @@ def cmd_update(args) -> int:
     if args.commit and changed:
         stat = commit_mirror(f"update {now_iso()} — {summary}")
         log(f"коммит: {stat}")
-        if args.push:
+        if args.push and not push_enabled():
+            log("пуш выключен (нет MP_DOCS_PUSH=1) — коммит остался только локально")
+        elif args.push:
             err = push_mirror()
             pushed = err is None
             log("зеркало отправлено в общий репозиторий" if pushed
