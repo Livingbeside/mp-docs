@@ -27,13 +27,13 @@ TOOLS = [
         "name": "search_docs",
         "description": (
             "Поиск по локальному зеркалу документации маркетплейсов "
-            "(Ozon Seller API и база знаний, Wildberries, Яндекс Маркет). "
+            "(Ozon Seller API и база знаний, Wildberries, Яндекс Маркет, Uzum Market). "
             "Возвращает совпадения с путями файлов."),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "что искать (регулярка ripgrep)"},
-                "marketplace": {"type": "string", "enum": ["ozon", "wb", "ym", "any"],
+                "marketplace": {"type": "string", "enum": ["ozon", "wb", "ym", "uzum", "any"],
                                 "description": "ограничить площадкой"},
                 "limit": {"type": "integer", "description": "сколько файлов, по умолчанию 20"},
             },
@@ -69,7 +69,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "marketplace": {"type": "string", "enum": ["ozon", "wb", "ym", "any"]},
+                "marketplace": {"type": "string", "enum": ["ozon", "wb", "ym", "uzum", "any"]},
                 "count": {"type": "integer", "description": "сколько последних записей, по умолчанию 5"},
             },
         },
@@ -86,7 +86,7 @@ TOOLS = [
     },
 ]
 
-SUBDIRS = {"ozon": "ozon", "wb": "wb", "ym": "ym"}
+SUBDIRS = {"ozon": "ozon", "wb": "wb", "ym": "ym", "uzum": "uzum"}
 
 
 def _clip(text: str) -> str:

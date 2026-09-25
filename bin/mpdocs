@@ -2,7 +2,8 @@
 # Лаунчер mp-docs: сам находит подходящий python.
 # Для чтения (search/status/changelog/changes) хватает голого python3 —
 # нужны только rg и git. Для обновления нужны requests и pyyaml, а браузерным
-# источникам (Ozon, WB) ещё и camoufox: он стоит в venv ozonpos, не в системном.
+# источникам (Ozon, WB, инструкция Uzum) ещё и camoufox: он стоит в venv ozonpos,
+# не в системном.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$HERE/scripts/mpdocs.py"
@@ -22,7 +23,7 @@ done
 for py in "${candidates[@]}"; do
   [ -n "$py" ] && command -v "$py" >/dev/null 2>&1 || continue
   if "$py" -c 'import requests, yaml' 2>/dev/null; then
-    echo "⚠️  python с camoufox не найден — Ozon и WB качаться не будут." >&2
+    echo "⚠️  python с camoufox не найден — Ozon, WB и инструкция Uzum качаться не будут." >&2
     exec "$py" "$SCRIPT" "$@"
   fi
 done

@@ -35,8 +35,10 @@ SOURCES = {
     "ozon-chat": ("src_ozon_chat", "Обновления Seller API из служебных чатов кабинета"),
     "wb": ("src_wb", "Wildberries: спеки всех разделов"),
     "ym": ("src_ym", "Яндекс Маркет: справка + спека"),
+    "uzum-api": ("src_uzum_api", "Спека Uzum Market Seller API"),
+    "uzum-kb": ("src_uzum_kb", "Инструкция для продавцов Uzum Market"),
 }
-BROWSER_SOURCES = ("ozon-api", "ozon-kb", "wb")
+BROWSER_SOURCES = ("ozon-api", "ozon-kb", "wb", "uzum-kb")
 
 
 def cmd_update(args) -> int:
@@ -59,6 +61,7 @@ def cmd_update(args) -> int:
                                  ensure_ascii=False, indent=2))
                 return 0
 
+    head_before = git("rev-parse", "HEAD", check=False).strip() or None
     results, failed = [], []
     for name in names:
         module_name, title = SOURCES[name]
@@ -88,10 +91,27 @@ def cmd_update(args) -> int:
     elif args.commit:
         log("изменений нет, коммитить нечего")
 
+    # Сводка в Telegram — только о том, что уже в истории зеркала (после коммита),
+    # и никогда не роняет обновление: оно своё дело сделало.
+    notified = None
+    if args.commit and args.notify:
+        try:
+            import notify
+            notified = notify.after_update(head_before, failed)
+        except Exception as exc:
+            msg = re.sub(r"bot\d+:[\w-]+", "bot***", f"{type(exc).__name__}: {exc}")
+            log(f"!! сводка в Telegram упала: {msg}")
+            notified = False
+
     print(json.dumps({"ok": not failed, "results": results, "failed": failed,
-                      "changed": changed, "pushed": pushed},
+                      "changed": changed, "pushed": pushed, "notified": notified},
                      ensure_ascii=False, indent=2))
     return 1 if failed else 0
+
+
+def cmd_notify(args) -> int:
+    import notify
+    return notify.cli(args.since, args.until, args.dry_run, args.html)
 
 
 def cmd_status(_args) -> int:
@@ -184,7 +204,17 @@ def main() -> int:
                     help="не отправлять зеркало в общий репозиторий (пуш и так требует MP_DOCS_PUSH=1)")
     up.add_argument("--force", action="store_true",
                     help="качать браузерные источники даже при нехватке памяти")
-    up.set_defaults(func=cmd_update, commit=True, push=True)
+    up.add_argument("--no-notify", dest="notify", action="store_false",
+                    help="не слать сводку в Telegram (она и так только при настроенном боте)")
+    up.set_defaults(func=cmd_update, commit=True, push=True, notify=True)
+
+    no = sub.add_parser("notify",
+                        help="сводка «что нового» в Telegram по истории зеркала")
+    no.add_argument("--since", help="от какой ревизии (по умолчанию — от последней отправленной)")
+    no.add_argument("--until", help="до какой ревизии (по умолчанию HEAD)")
+    no.add_argument("-n", "--dry-run", action="store_true", help="показать, не отправляя")
+    no.add_argument("--html", action="store_true", help="в --dry-run печатать разметку как есть")
+    no.set_defaults(func=cmd_notify)
 
     st = sub.add_parser("status", help="что есть в зеркале и когда обновлялось")
     st.set_defaults(func=cmd_status)
@@ -205,7 +235,7 @@ def main() -> int:
     se.add_argument("query")
     se.add_argument("-g", "--glob", default="*.md")
     se.add_argument("-s", "--scope", default="",
-                    help="ограничить подкаталогом: ozon, ozon/kb, wb, ym")
+                    help="ограничить подкаталогом: ozon, ozon/kb, wb, ym, uzum")
     se.add_argument("-l", "--files", action="store_true", help="только имена файлов")
     se.add_argument("-m", "--max-count", type=int, default=3)
     se.set_defaults(func=cmd_search)
