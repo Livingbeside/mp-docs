@@ -207,8 +207,17 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, st
                 await page.goto(ROOT, wait_until="domcontentloaded", timeout=90_000)
                 await page.wait_for_selector(READY, timeout=wait_ms)
             except Exception as exc:
-                raise RuntimeError(f"корень инструкции не открылся ({type(exc).__name__}) — "
-                                   "проверка браузера не пустила?") from None
+                # Два разных отказа: 30.09 ошибка винила проверку браузера, а сайт
+                # просто сменил движок — страница открылась, но без разметки VitePress.
+                try:
+                    title = await page.title()
+                except Exception:
+                    title = ""
+                if "showcaptcha" in page.url or "Верификация" in title:
+                    raise RuntimeError("проверка браузера не пустила — "
+                                       "корень так и остался заглушкой") from None
+                raise RuntimeError(f"корень не открылся как VitePress ({type(exc).__name__}, "
+                                   f"«{title or page.url}») — сменился движок сайта?") from None
 
             async def fetch(url: str, method: str = "GET"):
                 try:
