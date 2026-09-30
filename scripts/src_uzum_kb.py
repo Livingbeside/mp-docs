@@ -2,22 +2,28 @@
 
 Страницы закрыты «проверкой браузера» Яндекса: requests вместо статьи получает
 редирект на /tmgrdfrend/showcaptchafast и заглушку «Верификация». Camoufox со
-своего IP проходит её за ~13 с, дальше страницы открываются меньше чем за секунду —
-поэтому браузер один на весь обход. Резидентный канал не нужен (проверено 2026-09-25).
+своего IP проходит её за ~13 с (резидентный канал не нужен, проверено 2026-09-25),
+а дальше страницы забираем запросами из того же контекста, с его cookie, —
+по ~0.2 с на страницу.
+
+Берём именно сырой HTML сервера, а не то, что браузер показал после скриптов.
+В разметке Uzum есть ошибки вложенности, браузер разбирает её не так, как
+рассчитывал Vue, и при гидратации Vue удаляет «лишние» узлы в конце статьи:
+30.09 в «4. Начало работы» так пропадали два последних абзаца. Переход роутером
+внутри сайта тоже не выход — на больших страницах он падает ошибкой Vue
+(runtime-15) и оставляет статью пустой. В сыром HTML текст целиком.
 
 До 2026-09-30 сайт был на VuePress 1, потом переехал на VitePress — обход,
-завязанный на разметку VuePress, в ту ночь упал. Список страниц теперь берём
-из __VP_HASH_MAP__, который VitePress кладёт в каждую страницу: там все страницы
-сборки, включая скрытые из меню (инструкция по брифу ЦПТ лежит в /uz/, хотя
-написана по-русски). Ключи карты — в нижнем регистре, а сервер к регистру
-чувствителен (/11.Analytics/ открывается, /11.analytics/ — 404), поэтому
-настоящий путь берём из ссылок меню, а у страниц вне меню он совпадает с ключом.
+завязанный на разметку VuePress, в ту ночь упал. Список страниц — __VP_HASH_MAP__
+в самой странице (все страницы сборки, включая скрытые из меню: инструкция по
+брифу ЦПТ лежит в /uz/, хотя написана по-русски). Ключи карты — в нижнем
+регистре, а сервер к регистру чувствителен (/11.Analytics/ открывается,
+/11.analytics/ — 404), поэтому настоящий путь берём из ссылок меню.
 
 Во время выкатки узлы за балансировщиком отдают разные сборки (видели 2026-09-25:
-старая и новая вперемешку полчаса), а скрипт чужой сборки узел не знает — 404.
-Поэтому если в обходе встретилось две сборки, дожимаем все страницы до самой
-свежей (по Last-Modified её app.*.js). Иначе зеркало собралось бы из двух версий
-и назавтра «поменялось» бы обратно.
+старая и новая вперемешку полчаса). Если в обходе встретилось две сборки,
+дожимаем все страницы до самой свежей (по Last-Modified её app.*.js), иначе
+зеркало собралось бы из двух версий и назавтра «поменялось» бы обратно.
 
 Узбекская версия (/uz/) — перевод тех же страниц. В зеркало её не берём, иначе
 каждая правка приходила бы дважды.
@@ -37,8 +43,10 @@ ROOT = "https://seller.uzum.uz/manual/"
 BASE = "uzum/kb"
 READY = "#VPContent"          # есть у любой страницы VitePress и нет у заглушки проверки
 APP_JS = re.compile(r'src="(/manual/assets/app\.[\w-]+\.js)"')
+LEAN_JS = re.compile(r'href="(/manual/assets/[^"]+\.lean\.js)"')
 HASH_MAP = re.compile(r'__VP_HASH_MAP__\s*=\s*JSON\.parse\("((?:[^"\\]|\\.)*)"\)')
 SITE_DATA = re.compile(r'__VP_SITE_DATA__\s*=\s*JSON\.parse\("((?:[^"\\]|\\.)*)"\)')
+EDITION = re.compile(r'"editionDate":"([^"]*)"')
 TITLE = re.compile(r"<title>(.*?)</title>", re.S)
 CYRILLIC = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
 
@@ -116,6 +124,12 @@ def _rel_for(path: str) -> str:
     return f"{BASE}/{'/'.join(parts) or 'intro'}.md"
 
 
+def _iso_date(s: str) -> str:
+    """editionDate у Uzum — «14.09.2026»; в зеркале даты ISO, как у Ozon."""
+    m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", (s or "").strip())
+    return f"{m.group(3)}-{m.group(2)}-{m.group(1)}" if m else (s or "")
+
+
 def _readable(url: str) -> str:
     """Свои якоря и имена картинок — кириллицей, а не %D0%…. Переводы строк
     (бывают прямо в href) выкидываем, как это делает браузер, а пробелы и скобки
@@ -137,6 +151,8 @@ def page_markdown(html: str, url: str) -> str:
     import extract
     from lxml import html as LH
 
+    if not (html or "").strip():
+        return ""
     doc = LH.fromstring(html)
     doc.make_links_absolute(url)
     found = _by_class(doc, "div", "vp-doc")
@@ -173,8 +189,9 @@ def _build(html: str | None) -> str | None:
     return m.group(1) if m else None
 
 
-async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str]]:
-    """Один браузер на весь обход. -> (страницы сборки, {путь: html})."""
+async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, str]]:
+    """Один браузер на весь обход. -> (страницы сборки, {путь: сырой html},
+    {путь: дата редакции})."""
     from common import proxyweb_scripts
     proxyweb_scripts()
     import browser as pw_browser
@@ -185,36 +202,47 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str]]:
             page, ctx, _sess, _state = await pw_browser._open_page(
                 br, session=None, with_images=False)
 
-            async def open_page(url: str, wait: int = 20_000) -> str | None:
+            log("Uzum KB: открываю корень инструкции (проверка браузера ~15 с)")
+            try:
+                await page.goto(ROOT, wait_until="domcontentloaded", timeout=90_000)
+                await page.wait_for_selector(READY, timeout=wait_ms)
+            except Exception as exc:
+                raise RuntimeError(f"корень инструкции не открылся ({type(exc).__name__}) — "
+                                   "проверка браузера не пустила?") from None
+
+            async def fetch(url: str, method: str = "GET"):
                 try:
-                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=90_000)
-                    if resp is not None and resp.status == 404:
-                        log(f"Uzum KB: {url} — 404")
-                        return None
-                    await page.wait_for_selector(READY, timeout=wait)
-                    return await page.content()
+                    return await ctx.request.fetch(url, method=method, timeout=45_000)
                 except Exception as exc:
                     log(f"Uzum KB: {url} — {type(exc).__name__}: {str(exc)[:160]}")
                     return None
+
+            async def raw(path: str) -> str | None:
+                resp = await fetch(ROOT + path)
+                if resp is None:
+                    return None
+                if "showcaptcha" in resp.url:
+                    log(f"Uzum KB: /{path} — проверка браузера вернулась")
+                    return None
+                if not resp.ok:
+                    log(f"Uzum KB: /{path} — HTTP {resp.status}")
+                    return None
+                return await resp.text()
 
             async def modified(build: str) -> float:
                 """Last-Modified скрипта сборки. Узел с другой сборкой его не знает
                 (404) — повторяем: с новым параметром балансировщик выберет другой узел."""
                 for i in range(8):
-                    resp = await ctx.request.fetch(f"{urljoin(ROOT, build)}?_={i}",
-                                                   method="HEAD", timeout=45_000)
-                    stamp = resp.headers.get("last-modified") if resp.ok else None
+                    resp = await fetch(f"{urljoin(ROOT, build)}?_={i}", "HEAD")
+                    stamp = resp.headers.get("last-modified") if resp and resp.ok else None
                     if stamp:
                         return parsedate_to_datetime(stamp).timestamp()
                     await asyncio.sleep(0.5)
                 return 0.0
 
-            log("Uzum KB: открываю корень инструкции (проверка браузера ~15 с)")
-            root_html = await open_page(ROOT, wait_ms)
-            if not root_html:
-                raise RuntimeError("корень инструкции не открылся — проверка браузера не пустила?")
+            root_html = await raw("")
             build = _build(root_html)
-            pages = site_pages(root_html)
+            pages = site_pages(root_html or "")
             if not build or not pages:
                 raise RuntimeError("в странице нет app.*.js или __VP_HASH_MAP__ — "
                                    "сайт больше не на VitePress?")
@@ -223,7 +251,7 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str]]:
             got: dict[str, tuple[str | None, str | None]] = {"": (root_html, build)}
             for p in pages:
                 if p["path"] not in got:
-                    html = await open_page(ROOT + p["path"])
+                    html = await raw(p["path"])
                     got[p["path"]] = (html, _build(html))
 
             builds = {b for _h, b in got.values() if b}
@@ -234,7 +262,7 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str]]:
                     f"беру свежую {target.rsplit('/', 1)[-1]}")
                 if target != build:
                     for i in range(8):     # список страниц — из корня свежей сборки
-                        html = await open_page(f"{ROOT}?_={i}", wait_ms)
+                        html = await raw(f"?_={i}")
                         if _build(html) == target:
                             got[""] = (html, target)
                             pages = site_pages(html)
@@ -244,14 +272,24 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str]]:
                     for i in range(8):
                         if b == target:
                             break
-                        html = await open_page(f"{ROOT}{p['path']}?_={i}")
+                        html = await raw(f"{p['path']}?_={i}")
                         b = _build(html)
                     got[p["path"]] = (html, b)
                     if b != target:
-                        log(f"Uzum KB: {p['path'] or '/'} — свежая сборка так и не попалась, "
+                        log(f"Uzum KB: /{p['path']} — свежая сборка так и не попалась, "
                             "страницу не трогаю")
                 build = target
-    return pages, {path: h for path, (h, b) in got.items() if h and b == build}
+            htmls = {path: h for path, (h, b) in got.items() if h and b == build}
+
+            # Дата редакции есть только во frontmatter исходника — в скрипте страницы.
+            editions = {}
+            for path, html in htmls.items():
+                m = LEAN_JS.search(html)
+                resp = await fetch(urljoin(ROOT, m.group(1))) if m else None
+                found = EDITION.search(await resp.text()) if resp and resp.ok else None
+                if found:
+                    editions[path] = _iso_date(found.group(1))
+    return pages, htmls, editions
 
 
 def _number(page: dict) -> int:
@@ -270,7 +308,7 @@ def _index(pages: list[dict]) -> str:
 
 
 def run(wait_ms: int = 60_000, **_kw) -> dict:
-    pages, htmls = asyncio.run(_crawl(wait_ms))
+    pages, htmls, editions = asyncio.run(_crawl(wait_ms))
 
     total = changed = skipped = translated = 0
     written = []
@@ -293,10 +331,11 @@ def run(wait_ms: int = 60_000, **_kw) -> dict:
         p["sections"] = [ln[3:].strip() for ln in md.splitlines() if ln.startswith("## ")]
         total += 1
         written.append(p)
-        if write_doc(_rel_for(p["path"]),
-                     {"title": p["title"], "marketplace": "uzum", "kind": "article",
-                      "path": "/" + p["path"], "source": url, "fetched_at": now_iso()},
-                     md):
+        meta = {"title": p["title"], "marketplace": "uzum", "kind": "article",
+                "path": "/" + p["path"], "source": url}
+        if editions.get(p["path"]):
+            meta["updated"] = editions[p["path"]]
+        if write_doc(_rel_for(p["path"]), {**meta, "fetched_at": now_iso()}, md):
             changed += 1
     if not total:
         raise RuntimeError(f"ни одной статьи из {len(pages)} страниц")
