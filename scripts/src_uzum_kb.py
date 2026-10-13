@@ -1,10 +1,12 @@
 """Инструкция для продавцов Uzum Market — seller.uzum.uz/manual, сайт на VitePress.
 
-Страницы закрыты «проверкой браузера» Яндекса: requests вместо статьи получает
-редирект на /tmgrdfrend/showcaptchafast и заглушку «Верификация». Camoufox со
-своего IP проходит её за ~13 с (резидентный канал не нужен, проверено 2026-09-25),
-а дальше страницы забираем запросами из того же контекста, с его cookie, —
-по ~0.2 с на страницу.
+Страницы закрыты антиботом. До 2026-10-11 это была «проверка браузера» Яндекса
+(редирект на /tmgrdfrend/showcaptchafast и заглушка «Верификация»), с 12.10 —
+Cloudflare. Camoufox со своего IP проходит его сразу (резидентный канал не нужен),
+а дальше страницы забираем fetch-ем из самой открытой страницы — по ~0.2 с на
+страницу. Именно из страницы: запрос из контекста мимо браузера (ctx.request —
+свой TLS и свои заголовки) Cloudflare встречает челленджем «Just a moment…» с 403,
+и две ночи подряд обход падал, хотя браузер корень открывал.
 
 Берём именно сырой HTML сервера, а не то, что браузер показал после скриптов.
 В разметке Uzum есть ошибки вложенности, браузер разбирает её не так, как
@@ -49,6 +51,22 @@ SITE_DATA = re.compile(r'__VP_SITE_DATA__\s*=\s*JSON\.parse\("((?:[^"\\]|\\.)*)"
 EDITION = re.compile(r'"editionDate":"([^"]*)"')
 TITLE = re.compile(r"<title>(.*?)</title>", re.S)
 CYRILLIC = set("абвгдеёжзийклмнопрстуфхцчшщъыьэюя")
+
+# fetch из открытой страницы: браузерные TLS, заголовки и cookie антибота.
+PAGE_FETCH = """async ({url, method}) => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 45000);
+    try {
+        const r = await fetch(url, {method, credentials: 'include', cache: 'no-store',
+                                    signal: ctl.signal});
+        const headers = {};
+        r.headers.forEach((v, k) => { headers[k] = v; });
+        return {status: r.status, ok: r.ok, url: r.url, headers,
+                text: method === 'HEAD' ? '' : await r.text()};
+    } finally {
+        clearTimeout(timer);
+    }
+}"""
 
 
 def _vp_json(rx: re.Pattern, html: str) -> dict:
@@ -144,6 +162,31 @@ def _by_class(el, tag: str, cls: str) -> list:
     return el.xpath(f'.//{tag}[contains(concat(" ", normalize-space(@class), " "), " {cls} ")]')
 
 
+def _cf_email(hexstr: str) -> str:
+    """Почта под Email Obfuscation Cloudflare: первый байт — ключ, остальные XOR с ним."""
+    try:
+        b = bytes.fromhex(hexstr or "")
+    except ValueError:
+        return ""
+    return bytes(x ^ b[0] for x in b[1:]).decode("utf-8", "replace") if b else ""
+
+
+def _unhide_emails(doc) -> None:
+    """С 12.10 Cloudflare прячет адреса: в сыром HTML «[email protected]» и шифр
+    в data-cfemail, настоящий адрес подставляет его скрипт. Раскрываем сами."""
+    for el in doc.xpath('//*[@data-cfemail]'):
+        email = _cf_email(el.get("data-cfemail"))
+        if email:
+            for child in list(el):
+                el.remove(child)
+            el.text = email
+            el.drop_tag()
+    for a in doc.xpath('//a[contains(@href, "/cdn-cgi/l/email-protection#")]'):
+        email = _cf_email(a.get("href").rsplit("#", 1)[-1])
+        if email:
+            a.set("href", f"mailto:{email}")
+
+
 def page_markdown(html: str, url: str) -> str:
     """Markdown статьи; пустая строка, если статьи в странице нет."""
     from common import proxyweb_scripts
@@ -154,6 +197,7 @@ def page_markdown(html: str, url: str) -> str:
     if not (html or "").strip():
         return ""
     doc = LH.fromstring(html)
+    _unhide_emails(doc)
     doc.make_links_absolute(url)
     found = _by_class(doc, "div", "vp-doc")
     if not found:
@@ -199,10 +243,10 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, st
 
     with pw_browser.browser_lock():
         async with AsyncCamoufox(headless=True, geoip=True, locale="ru-RU") as br:
-            page, ctx, _sess, _state = await pw_browser._open_page(
+            page, _ctx, _sess, _state = await pw_browser._open_page(
                 br, session=None, with_images=False)
 
-            log("Uzum KB: открываю корень инструкции (проверка браузера ~15 с)")
+            log("Uzum KB: открываю корень инструкции (антибот)")
             try:
                 await page.goto(ROOT, wait_until="domcontentloaded", timeout=90_000)
                 await page.wait_for_selector(READY, timeout=wait_ms)
@@ -213,15 +257,15 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, st
                     title = await page.title()
                 except Exception:
                     title = ""
-                if "showcaptcha" in page.url or "Верификация" in title:
-                    raise RuntimeError("проверка браузера не пустила — "
-                                       "корень так и остался заглушкой") from None
+                if "showcaptcha" in page.url or "Верификация" in title or "Just a moment" in title:
+                    raise RuntimeError(f"антибот не пустил браузер — корень так и остался "
+                                       f"заглушкой «{title}»") from None
                 raise RuntimeError(f"корень не открылся как VitePress ({type(exc).__name__}, "
                                    f"«{title or page.url}») — сменился движок сайта?") from None
 
-            async def fetch(url: str, method: str = "GET"):
+            async def fetch(url: str, method: str = "GET") -> dict | None:
                 try:
-                    return await ctx.request.fetch(url, method=method, timeout=45_000)
+                    return await page.evaluate(PAGE_FETCH, {"url": url, "method": method})
                 except Exception as exc:
                     log(f"Uzum KB: {url} — {type(exc).__name__}: {str(exc)[:160]}")
                     return None
@@ -230,28 +274,35 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, st
                 resp = await fetch(ROOT + path)
                 if resp is None:
                     return None
-                if "showcaptcha" in resp.url:
-                    log(f"Uzum KB: /{path} — проверка браузера вернулась")
+                if "showcaptcha" in resp["url"]:
+                    log(f"Uzum KB: /{path} — проверка браузера Яндекса вернулась")
                     return None
-                if not resp.ok:
-                    log(f"Uzum KB: /{path} — HTTP {resp.status}")
+                if (resp["headers"].get("cf-mitigated") == "challenge"
+                        or "<title>Just a moment" in resp["text"]):
+                    log(f"Uzum KB: /{path} — Cloudflare ответил челленджем (HTTP {resp['status']})")
                     return None
-                return await resp.text()
+                if not resp["ok"]:
+                    log(f"Uzum KB: /{path} — HTTP {resp['status']}")
+                    return None
+                return resp["text"]
 
             async def modified(build: str) -> float:
                 """Last-Modified скрипта сборки. Узел с другой сборкой его не знает
                 (404) — повторяем: с новым параметром балансировщик выберет другой узел."""
                 for i in range(8):
                     resp = await fetch(f"{urljoin(ROOT, build)}?_={i}", "HEAD")
-                    stamp = resp.headers.get("last-modified") if resp and resp.ok else None
+                    stamp = resp["headers"].get("last-modified") if resp and resp["ok"] else None
                     if stamp:
                         return parsedate_to_datetime(stamp).timestamp()
                     await asyncio.sleep(0.5)
                 return 0.0
 
             root_html = await raw("")
+            if root_html is None:
+                raise RuntimeError("корень открылся в браузере, но запросом из страницы "
+                                   "не отдался — причина строкой выше")
             build = _build(root_html)
-            pages = site_pages(root_html or "")
+            pages = site_pages(root_html)
             if not build or not pages:
                 raise RuntimeError("в странице нет app.*.js или __VP_HASH_MAP__ — "
                                    "сайт больше не на VitePress?")
@@ -295,7 +346,7 @@ async def _crawl(wait_ms: int) -> tuple[list[dict], dict[str, str], dict[str, st
             for path, html in htmls.items():
                 m = LEAN_JS.search(html)
                 resp = await fetch(urljoin(ROOT, m.group(1))) if m else None
-                found = EDITION.search(await resp.text()) if resp and resp.ok else None
+                found = EDITION.search(resp["text"]) if resp and resp["ok"] else None
                 if found:
                     editions[path] = _iso_date(found.group(1))
     return pages, htmls, editions
