@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from common import slug, write_doc
+from common import MIRROR, log, slug, write_doc
 
 METHODS = ("get", "post", "put", "patch", "delete", "head", "options")
 MAX_DEPTH = 6
@@ -248,12 +248,42 @@ def render_guides(spec: dict, *, api: str, base: str, source_url: str) -> tuple[
     return total, changed
 
 
+# Спека, в которой методов меньше половины от лежащих страниц, — скорее обрезанная
+# выдача, чем массовое удаление: тогда ничего не трогаем. Переименование всех
+# тегов раздела даёт ровно половину и проходит.
+PRUNE_MIN_SHARE = 0.5
+
+
+def prune_operations(base: str, keep: set[str]) -> int:
+    """Убирает страницы методов, которых нет в спеке: удалённые методы и копии,
+    оставшиеся в старой папке после переименования тега (у WB лежало 57 таких
+    дублей). Без этого find_method выдавал удалённый метод живым — так было
+    с /v1/cargoes-label/file/{file_guid}, который Ozon убрал 22.10.2026."""
+    root = MIRROR / base
+    stale = [f for f in root.rglob("*.md")
+             if str(f.relative_to(MIRROR)) not in keep
+             and re.search(r"^operation_id: ", f.read_text(encoding="utf-8")[:2000], re.M)]
+    if not stale:
+        return 0
+    if len(keep) < PRUNE_MIN_SHARE * (len(keep) + len(stale)):
+        log(f"{base}: в спеке {len(keep)} методов при {len(stale)} лишних страницах — "
+            f"похоже на обрезанную спеку, страницы не удаляю")
+        return 0
+    for f in stale:
+        f.unlink()
+        if not any(f.parent.iterdir()):
+            f.parent.rmdir()
+    log(f"{base}: убрал страниц методов, которых нет в спеке, — {len(stale)}")
+    return len(stale)
+
+
 def render_spec(spec: dict, *, api: str, base: str, source_url: str) -> tuple[int, int]:
     """Пишет все операции спеки. Возвращает (всего, изменилось)."""
     info = spec.get("info") or {}
     version = str(info.get("version", ""))
     total = changed = 0
     index: list[str] = []
+    written: set[str] = set()
     for path, path_item in (spec.get("paths") or {}).items():
         if not isinstance(path_item, dict):
             continue
@@ -265,12 +295,15 @@ def render_spec(spec: dict, *, api: str, base: str, source_url: str) -> tuple[in
                 spec, path, method, op, path_item,
                 api=api, base=base, source_url=source_url, spec_version=version)
             total += 1
+            written.add(rel)
             if write_doc(rel, meta, body):
                 changed += 1
             index.append("| `{}` | `{}` | {} | [{}]({}) |".format(
                 method.upper(), path, (op.get("tags") or ["—"])[0],
                 _clean(op.get("summary")) or meta["operation_id"],
                 rel.split("/", len(base.split("/")))[-1]))
+
+    changed += prune_operations(base, written)
 
     guides, guides_changed = render_guides(spec, api=api, base=base,
                                            source_url=source_url)
