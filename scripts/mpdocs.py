@@ -117,6 +117,11 @@ def cmd_notify(args) -> int:
     return notify.cli(args.since, args.until, args.dry_run, args.html)
 
 
+def cmd_usage(args) -> int:
+    import usage
+    return usage.cli(args.refresh, args.json)
+
+
 def cmd_status(_args) -> int:
     rows = []
     for marker in sorted(MIRROR.rglob(".fetched")):
@@ -218,6 +223,12 @@ def main() -> int:
     no.add_argument("-n", "--dry-run", action="store_true", help="показать, не отправляя")
     no.add_argument("--html", action="store_true", help="в --dry-run печатать разметку как есть")
     no.set_defaults(func=cmd_notify)
+
+    us = sub.add_parser("usage",
+                        help="какие методы площадок вызывает наш код и что с ними в документации")
+    us.add_argument("--refresh", action="store_true", help="сперва скачать свежие скрипты Google")
+    us.add_argument("--json", action="store_true")
+    us.set_defaults(func=cmd_usage)
 
     st = sub.add_parser("status", help="что есть в зеркале и когда обновлялось")
     st.set_defaults(func=cmd_status)

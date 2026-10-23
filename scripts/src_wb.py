@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 
-from common import MIRROR, json_stable, log, now_iso, write_doc, write_raw
+from common import MIRROR, json_stable, log, now_iso, save_cache, write_doc, write_raw
 from render_openapi import render_spec
 
 HOME = "https://dev.wildberries.ru/"
@@ -158,6 +158,7 @@ def run(channel: str = "optic", **_kw) -> dict:
 
     total = changed = 0
     ok_sections = 0
+    live: list[str] = []
     for section, res in zip(sections, results):
         if not res.html:
             log(f"WB: {section} — пусто (status={res.status}, {res.error})")
@@ -167,6 +168,7 @@ def run(channel: str = "optic", **_kw) -> dict:
             log(f"WB: {section} — спека не найдена в странице ({len(res.html)} байт)")
             continue
         ok_sections += 1
+        live.append(section)
         if write_raw(f"{BASE}/{section}/spec.json", json_stable(spec)):
             changed += 1
         ops, ops_changed = render_spec(
@@ -195,6 +197,11 @@ def run(channel: str = "optic", **_kw) -> dict:
         else:
             log(f"WB: журнал изменений пуст ({len(md)} символов), пропускаю")
 
+    # Каталоги переименованных разделов остаются в зеркале (на них держится сравнение
+    # спек в сводке), поэтому какие разделы живые — знает только этот прогон.
+    # usage.py по ним решает, есть ли ещё метод у WB.
+    if live:
+        save_cache("wb-sections.json", {"sections": live, "at": now_iso()})
     log(f"WB: разделов взято {ok_sections}/{len(sections)}, методов {total}, "
         f"обновлено файлов {changed}")
     (MIRROR / "wb").mkdir(parents=True, exist_ok=True)

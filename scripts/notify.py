@@ -830,12 +830,27 @@ def pack(blocks: list[list[str]], header: str, footer: list[str]) -> list[str]:
     return msgs
 
 
-def build(base: str, head: str, failed: list[dict] | None = None) -> list[str]:
-    """Готовые сообщения (HTML) или пустой список, если сообщать нечего."""
+def _usage(f: Findings | None, head: str, refresh: bool):
+    """Проверка нашего кода (usage.py). Её сбой сводку не роняет."""
+    try:
+        import usage
+        return usage.check(f, head, refresh=refresh)
+    except Exception as exc:
+        log(f"!! usage: проверка нашего кода упала — {type(exc).__name__}: {clip(str(exc), 300)}")
+        return None
+
+
+def build(base: str, head: str, failed: list[dict] | None = None, *,
+          refresh: bool = False) -> tuple[list[str], object]:
+    """Готовые сообщения (HTML) — пустой список, если сообщать нечего, — и отчёт
+    проверки нашего кода (его commit() — после успешной отправки)."""
     f = collect(base, head) if base != head else None
     failed = failed or []
-    if (f is None or f.empty()) and not failed:
-        return []
+    rep = _usage(f, head, refresh)
+    news = f is not None and not f.empty()
+    ours = bool(rep and (rep.items or rep.errors))
+    if not news and not failed and not ours:
+        return [], rep
 
     commits = git("rev-list", "--count", f"{base}..{head}", check=False).strip()
     single = commits == "1"
@@ -844,9 +859,13 @@ def build(base: str, head: str, failed: list[dict] | None = None) -> list[str]:
     when = days[-1] if len(days) == 1 else f"{days[0]}–{days[-1]}" if days else \
         datetime.now(TZ).strftime("%d.%m")
 
-    if f and not f.empty():
+    ours_line = rep.summary() if rep else ""
+    if news:
         header = (f"<b>📚 Что нового в документации маркетплейсов · {when}</b>\n"
-                  + esc(summary_line(f)))
+                  + esc(" · ".join(x for x in (ours_line, summary_line(f)) if x)))
+    elif ours:
+        header = (f"<b>🔧 Наш код и документация маркетплейсов · {when}</b>"
+                  + (f"\n{esc(ours_line)}" if ours_line else ""))
     else:
         # Новостей нет, но источник упал: молчание тогда значило бы «ничего не
         # поменялось», а на деле мы просто не посмотрели.
@@ -857,11 +876,14 @@ def build(base: str, head: str, failed: list[dict] | None = None) -> list[str]:
         err = re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://***@", str(item.get("error", "")))
         footer.append(f"⚠️ Не обновился источник {esc(item.get('source', '?'))}: "
                       f"{esc(clip(err, 200))}")
-    if f and not f.empty():
+    for err in (rep.errors if rep else []):
+        footer.append(f"⚠️ Проверка кода: {esc(err)}")
+    if news:
         link = web_link(base, head, single)
         footer.append(f'<a href="{link}">Полный дифф</a>' if link else
                       "Полный дифф: <code>mpdocs changes</code>")
-    return pack(render(f) if f else [], header, footer)
+    blocks = (rep.blocks() if rep else []) + (render(f) if news else [])
+    return pack(blocks, header, footer), rep
 
 
 # ─── отправка ────────────────────────────────────────────────────────────────
@@ -940,7 +962,7 @@ def after_update(head_before: str | None, failed: list[dict]) -> bool | None:
     base = load_cache(STATE).get("last_commit") or ""
     if not base or not rev(base) or not is_ancestor(base, head):
         base = head_before or head
-    messages = build(base, head, failed)
+    messages, rep = build(base, head, failed, refresh=True)
     if not messages:
         if base != head:
             log("telegram: в изменениях только шум — сообщать нечего")
@@ -951,6 +973,8 @@ def after_update(head_before: str | None, failed: list[dict]) -> bool | None:
         else "!! telegram: сводка не ушла — повторю со следующим прогоном")
     if ok:
         _remember(head)
+        if rep:
+            rep.commit()
     return ok
 
 
@@ -960,7 +984,7 @@ def cli(since: str | None, until: str | None, dry_run: bool, as_html: bool) -> i
     if not head or not base:
         print("не нашёл ревизию в зеркале")
         return 2
-    messages = build(base, head)
+    messages, rep = build(base, head)
     if not messages:
         print(f"после {head[:9]} обновлений не было" if base == head
               else f"{base[:9]}..{head[:9]}: ничего нового, только шум")
@@ -980,5 +1004,7 @@ def cli(since: str | None, until: str | None, dry_run: bool, as_html: bool) -> i
         return 1
     if head == rev("HEAD"):
         _remember(head)
+        if rep:
+            rep.commit()
     print(f"отправлено сообщений: {len(messages)}")
     return 0
